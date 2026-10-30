@@ -34,7 +34,7 @@ def run(binary, *args, expect_failure=False):
 
 def check_solution(
     binary, problem, output, expected_x, expected_objective,
-    *, infeasibility_tolerance=None, device=None,
+    *, infeasibility_tolerance=None, device=None, extra_options=(),
 ):
     output.mkdir()
     options = [] if infeasibility_tolerance is None else ["--eps_infeasible", infeasibility_tolerance]
@@ -42,7 +42,7 @@ def check_solution(
         options.extend(["--device", device])
     log = run(
         binary, "--verbose", "2", "--threads", "2", "--time_limit", "30",
-        "--eps_opt", "1e-7", "--eps_feas", "1e-7", *options, problem, output,
+        "--eps_opt", "1e-7", "--eps_feas", "1e-7", *options, *extra_options, problem, output,
     )
     tolerance_log = [
         line.partition(":")[2] for line in log.splitlines()
@@ -56,6 +56,8 @@ def check_solution(
     assert len(summaries) == len(primals) == 1, log
     summary = dict(line.split(": ", 1) for line in summaries[0].read_text().splitlines())
     assert summary["Termination Reason"] == "OPTIMAL", log
+    read_time = float(summary["Read Time (sec)"])
+    assert math.isfinite(read_time) and read_time >= 0.0, summary
     actual_x = [float(value) for value in primals[0].read_text().split()]
     assert len(actual_x) == len(expected_x), actual_x
     for actual, expected in zip(actual_x, expected_x):
@@ -80,6 +82,16 @@ def check_infeasibility_options(binary):
     print("PASS CLI infeasibility options", flush=True)
 
 
+def check_quadratic_options(binary):
+    for value in ["-1", "nan", "inf", "oops", "0.5junk"]:
+        log = run(binary, "--k_p", value, "unused.qps", "unused-output", expect_failure=True)
+        assert "k_p must be finite and nonnegative" in log, log
+    for value in ["-1", "2", "true", "oops"]:
+        log = run(binary, "--linearized", value, "unused.qps", "unused-output", expect_failure=True)
+        assert "linearized must be 0 or 1" in log, log
+    print("PASS CLI quadratic option validation", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
@@ -95,6 +107,7 @@ def main():
         assert "Failed to read" not in log, log
     print("PASS CLI device validation", flush=True)
     check_infeasibility_options(binary)
+    check_quadratic_options(binary)
     with tempfile.TemporaryDirectory(prefix="pdhcg-cli-") as directory:
         root = Path(directory)
         # min x^2 + y^2 - 2x - 4y, x+y >= 4, x,y >= 0.
@@ -120,6 +133,17 @@ ENDATA
         check_solution(
             binary, qp, root / "qp", [1.5, 2.5], -4.5,
             infeasibility_tolerance=1e-12,
+        )
+        # Both spellings can be combined; later options take precedence.
+        check_solution(
+            binary, qp, root / "linearized", [1.5, 2.5], -4.5,
+            extra_options=("--k_p", "0.5", "--linearized", "0",
+                           "--non_diagonal_quadratic_mode", "linearized"),
+        )
+        check_solution(
+            binary, qp, root / "inner", [1.5, 2.5], -4.5,
+            extra_options=("--k_p", "0", "--non_diagonal_quadratic_mode", "linearized",
+                           "--linearized", "0"),
         )
         compressed = root / "tiny.qps.gz"
         with gzip.open(compressed, "wb") as stream:

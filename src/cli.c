@@ -22,15 +22,63 @@ limitations under the License.
 #include "utils.h"
 #include <getopt.h>
 #include <libgen.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #ifdef PDHCG_COMPILE_DISTRIBUTED
 #include <mpi.h>
 #endif
+
+static double cli_wall_time(void)
+{
+#ifdef _WIN32
+    LARGE_INTEGER counter, frequency;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&counter);
+    return (double)counter.QuadPart / (double)frequency.QuadPart;
+#else
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    {
+        perror("clock_gettime");
+        exit(EXIT_FAILURE);
+    }
+    return (double)now.tv_sec + (double)now.tv_nsec * 1e-9;
+#endif
+}
+
+static int parse_k_p(pdhg_parameters_t *params, const char *value)
+{
+    char *end = NULL;
+    double gain = strtod(value, &end);
+    if (end == value || *end != '\0' || !isfinite(gain) || gain < 0.0)
+    {
+        fprintf(stderr, "Error: k_p must be finite and nonnegative\n");
+        return 1;
+    }
+    params->restart_params.k_p = gain;
+    return 0;
+}
+
+static int parse_linearized(pdhg_parameters_t *params, const char *value)
+{
+    if (strcmp(value, "0") != 0 && strcmp(value, "1") != 0)
+    {
+        fprintf(stderr, "Error: linearized must be 0 or 1\n");
+        return 1;
+    }
+    params->non_diagonal_quadratic_mode = strcmp(value, "1") == 0
+        ? NON_DIAGONAL_QUADRATIC_LINEARIZED : NON_DIAGONAL_QUADRATIC_INNER;
+    return 0;
+}
 
 static void print_devices(void)
 {
@@ -108,7 +156,7 @@ void save_solution(const double *data, int size, const char *output_dir, const c
     free(file_path);
 }
 
-void save_solver_summary(const pdhcg_result_t *result, const char *output_dir, const char *instance_name)
+void save_solver_summary(const pdhcg_result_t *result, const char *output_dir, const char *instance_name, double read_time_sec)
 {
     char *file_path = get_output_path(output_dir, instance_name, "_summary.txt");
     if (file_path == NULL)
@@ -125,6 +173,7 @@ void save_solver_summary(const pdhcg_result_t *result, const char *output_dir, c
     }
     fprintf(outfile, "Termination Reason: %s\n", termination_reason_to_string(result->termination_reason));
     fprintf(outfile, "Runtime (sec): %e\n", result->cumulative_time_sec);
+    fprintf(outfile, "Read Time (sec): %e\n", read_time_sec);
     fprintf(outfile, "Iterations Count: %d\n", result->total_count);
     if (result->total_inner_count > 0)
     {
@@ -188,6 +237,8 @@ void print_usage(const char *prog_name)
     fprintf(stderr, "      --presolve <0|1>     Enable PreFOS presolve when built (default: 0).\n");
     fprintf(stderr, "      --curtis_reid_iter   Iterations for Curtis-Reid scaling (default: 0, disabled).\n");
     fprintf(stderr, "      --l_inf_ruiz_iter    Iterations for L-inf Ruiz rescaling (default: 10).\n");
+    fprintf(stderr, "      --k_p <value>        Primal weight proportional gain (default: 0.99).\n");
+    fprintf(stderr, "      --linearized <0|1>   Alias for inner (0) or linearized (1) quadratic updates.\n");
     fprintf(stderr, "      --no_pock_chambolle  Disable Pock-Chambolle rescaling (default: enabled).\n");
     fprintf(stderr, "      --pock_chambolle_alpha Value for Pock-Chambolle alpha (default: 1.0).\n");
     fprintf(stderr, "      --no_bound_obj_rescaling Disable bound objective rescaling.\n");
@@ -256,6 +307,8 @@ int run_pdhcg(int argc, char *argv[])
                                            {"non_diagonal_quadratic_mode", required_argument, 0, 1026},
                                            {"threads", required_argument, 0, 1027},
                                            {"device", required_argument, 0, 1028},
+                                           {"k_p", required_argument, 0, 1029},
+                                           {"linearized", required_argument, 0, 1030},
                                            {0, 0, 0, 0}};
 
     int opt;
@@ -370,6 +423,14 @@ int run_pdhcg(int argc, char *argv[])
             case 1028:
                 params.device = optarg;
                 break;
+            case 1029:
+                if (parse_k_p(&params, optarg) != 0)
+                    return 1;
+                break;
+            case 1030:
+                if (parse_linearized(&params, optarg) != 0)
+                    return 1;
+                break;
             case 1026:
                 if (strcmp(optarg, "inner") == 0)
                     params.non_diagonal_quadratic_mode = NON_DIAGONAL_QUADRATIC_INNER;
@@ -407,7 +468,9 @@ int run_pdhcg(int argc, char *argv[])
     if (instance_name == NULL)
         return 1;
 
+    const double read_start = cli_wall_time();
     qp_problem_t *problem = read_problem_file(filename);
+    const double read_time_sec = cli_wall_time() - read_start;
     if (problem == NULL)
     {
         fprintf(stderr, "Failed to read or parse the file.\n");
@@ -424,7 +487,7 @@ int run_pdhcg(int argc, char *argv[])
     }
     else
     {
-        save_solver_summary(result, output_dir, instance_name);
+        save_solver_summary(result, output_dir, instance_name, read_time_sec);
         save_solution(
             result->primal_solution, problem->num_variables, output_dir, instance_name, "_primal_solution.txt");
         save_solution(result->dual_solution, problem->num_constraints, output_dir, instance_name, "_dual_solution.txt");
@@ -489,6 +552,8 @@ int run_d_pdhcg(int argc, char *argv[])
                                            {"non_diagonal_quadratic_mode", required_argument, 0, 1026},
                                            {"threads", required_argument, 0, 1027},
                                            {"device", required_argument, 0, 1028},
+                                           {"k_p", required_argument, 0, 1029},
+                                           {"linearized", required_argument, 0, 1030},
                                            {"grid_size", required_argument, 0, 2001},
                                            {"partition_method", required_argument, 0, 2002},
                                            {"permute_method", required_argument, 0, 2003},
@@ -598,6 +663,20 @@ int run_d_pdhcg(int argc, char *argv[])
                 break;
             case 1028:
                 params.device = optarg;
+                break;
+            case 1029:
+                if (parse_k_p(&params, optarg) != 0)
+                {
+                    MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+                    return 1;
+                }
+                break;
+            case 1030:
+                if (parse_linearized(&params, optarg) != 0)
+                {
+                    MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+                    return 1;
+                }
                 break;
             case 1026:
                 if (strcmp(optarg, "inner") == 0)
@@ -729,12 +808,15 @@ int run_d_pdhcg(int argc, char *argv[])
     }
 
     qp_problem_t *problem = NULL;
+    double read_time_sec = 0.0;
 
     if (rank_global == 0)
     {
         if (params.verbose)
             printf("Rank 0: Loading problem file '%s'...\n", filename);
+        const double read_start = cli_wall_time();
         problem = read_problem_file(filename);
+        read_time_sec = cli_wall_time() - read_start;
 
         if (problem == NULL)
         {
@@ -756,7 +838,7 @@ int run_d_pdhcg(int argc, char *argv[])
         }
         else
         {
-            save_solver_summary(result, output_dir, instance_name);
+            save_solver_summary(result, output_dir, instance_name, read_time_sec);
             save_solution(
                 result->primal_solution, result->num_variables, output_dir, instance_name, "_primal_solution.txt");
             save_solution(

@@ -35,3 +35,14 @@ The executable's help lists all supported flags, accepted values, and defaults:
 See [Devices](devices.md) for backend selection, CPU threads, and multi-GPU
 execution; see [Algorithm](algorithm.md) for the solver's update and certificate
 conditions.
+
+## Quadratic update options
+
+`--k_p <value>` sets the finite, nonnegative proportional gain of the primal
+weight controller. `--linearized 1` selects linearized quadratic updates;
+`--linearized 0` selects inner updates. It is an alias for
+`--non_diagonal_quadratic_mode`; the last supplied option takes precedence.
+
+The summary's `Read Time (sec)` measures input reading and parsing.
+`Runtime (sec)` measures solver iterations, excluding reading, QCQP lifting,
+rescaling and initialization.
