@@ -22,63 +22,15 @@ limitations under the License.
 #include "utils.h"
 #include <getopt.h>
 #include <libgen.h>
-#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 #ifdef PDHCG_COMPILE_DISTRIBUTED
 #include <mpi.h>
 #endif
-
-static double cli_wall_time(void)
-{
-#ifdef _WIN32
-    LARGE_INTEGER counter, frequency;
-    QueryPerformanceFrequency(&frequency);
-    QueryPerformanceCounter(&counter);
-    return (double)counter.QuadPart / (double)frequency.QuadPart;
-#else
-    struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-    {
-        perror("clock_gettime");
-        exit(EXIT_FAILURE);
-    }
-    return (double)now.tv_sec + (double)now.tv_nsec * 1e-9;
-#endif
-}
-
-static int parse_k_p(pdhg_parameters_t *params, const char *value)
-{
-    char *end = NULL;
-    double gain = strtod(value, &end);
-    if (end == value || *end != '\0' || !isfinite(gain) || gain < 0.0)
-    {
-        fprintf(stderr, "Error: k_p must be finite and nonnegative\n");
-        return 1;
-    }
-    params->restart_params.k_p = gain;
-    return 0;
-}
-
-static int parse_linearized(pdhg_parameters_t *params, const char *value)
-{
-    if (strcmp(value, "0") != 0 && strcmp(value, "1") != 0)
-    {
-        fprintf(stderr, "Error: linearized must be 0 or 1\n");
-        return 1;
-    }
-    params->non_diagonal_quadratic_mode = strcmp(value, "1") == 0
-        ? NON_DIAGONAL_QUADRATIC_LINEARIZED : NON_DIAGONAL_QUADRATIC_INNER;
-    return 0;
-}
 
 static void print_devices(void)
 {
@@ -237,8 +189,6 @@ void print_usage(const char *prog_name)
     fprintf(stderr, "      --presolve <0|1>     Enable PreFOS presolve when built (default: 0).\n");
     fprintf(stderr, "      --curtis_reid_iter   Iterations for Curtis-Reid scaling (default: 0, disabled).\n");
     fprintf(stderr, "      --l_inf_ruiz_iter    Iterations for L-inf Ruiz rescaling (default: 10).\n");
-    fprintf(stderr, "      --k_p <value>        Primal weight proportional gain (default: 0.99).\n");
-    fprintf(stderr, "      --linearized <0|1>   Alias for inner (0) or linearized (1) quadratic updates.\n");
     fprintf(stderr, "      --no_pock_chambolle  Disable Pock-Chambolle rescaling (default: enabled).\n");
     fprintf(stderr, "      --pock_chambolle_alpha Value for Pock-Chambolle alpha (default: 1.0).\n");
     fprintf(stderr, "      --no_bound_obj_rescaling Disable bound objective rescaling.\n");
@@ -248,6 +198,7 @@ void print_usage(const char *prog_name)
     fprintf(stderr,
             "      --sufficient_reduction_for_restart Sufficient reduction factor for restart (default: 0.2).\n");
     fprintf(stderr, "      --necessary_reduction_for_restart Necessary reduction factor for restart (default: 0.8).\n");
+    fprintf(stderr, "      --k_p <float>        Primal weight proportional gain (default: 0.99).\n");
     fprintf(stderr, "      --sv_max_iter <int>  Max iterations for singular value estimation (default: 5000).\n");
     fprintf(stderr, "      --sv_tol <float>     Tolerance for singular value estimation (default: 1e-4).\n");
     fprintf(stderr, "      --opt_norm <type>    Norm for optimality criteria: l2 or linf (default: linf).\n");
@@ -308,7 +259,6 @@ int run_pdhcg(int argc, char *argv[])
                                            {"threads", required_argument, 0, 1027},
                                            {"device", required_argument, 0, 1028},
                                            {"k_p", required_argument, 0, 1029},
-                                           {"linearized", required_argument, 0, 1030},
                                            {0, 0, 0, 0}};
 
     int opt;
@@ -424,12 +374,7 @@ int run_pdhcg(int argc, char *argv[])
                 params.device = optarg;
                 break;
             case 1029:
-                if (parse_k_p(&params, optarg) != 0)
-                    return 1;
-                break;
-            case 1030:
-                if (parse_linearized(&params, optarg) != 0)
-                    return 1;
+                params.restart_params.k_p = atof(optarg);
                 break;
             case 1026:
                 if (strcmp(optarg, "inner") == 0)
@@ -468,9 +413,9 @@ int run_pdhcg(int argc, char *argv[])
     if (instance_name == NULL)
         return 1;
 
-    const double read_start = cli_wall_time();
+    const double read_start = monotonic_time_seconds();
     qp_problem_t *problem = read_problem_file(filename);
-    const double read_time_sec = cli_wall_time() - read_start;
+    const double read_time_sec = monotonic_time_seconds() - read_start;
     if (problem == NULL)
     {
         fprintf(stderr, "Failed to read or parse the file.\n");
@@ -553,7 +498,6 @@ int run_d_pdhcg(int argc, char *argv[])
                                            {"threads", required_argument, 0, 1027},
                                            {"device", required_argument, 0, 1028},
                                            {"k_p", required_argument, 0, 1029},
-                                           {"linearized", required_argument, 0, 1030},
                                            {"grid_size", required_argument, 0, 2001},
                                            {"partition_method", required_argument, 0, 2002},
                                            {"permute_method", required_argument, 0, 2003},
@@ -665,18 +609,7 @@ int run_d_pdhcg(int argc, char *argv[])
                 params.device = optarg;
                 break;
             case 1029:
-                if (parse_k_p(&params, optarg) != 0)
-                {
-                    MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
-                    return 1;
-                }
-                break;
-            case 1030:
-                if (parse_linearized(&params, optarg) != 0)
-                {
-                    MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
-                    return 1;
-                }
+                params.restart_params.k_p = atof(optarg);
                 break;
             case 1026:
                 if (strcmp(optarg, "inner") == 0)
@@ -814,9 +747,9 @@ int run_d_pdhcg(int argc, char *argv[])
     {
         if (params.verbose)
             printf("Rank 0: Loading problem file '%s'...\n", filename);
-        const double read_start = cli_wall_time();
+        const double read_start = monotonic_time_seconds();
         problem = read_problem_file(filename);
-        read_time_sec = cli_wall_time() - read_start;
+        read_time_sec = monotonic_time_seconds() - read_start;
 
         if (problem == NULL)
         {

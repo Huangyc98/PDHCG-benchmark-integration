@@ -60,6 +60,8 @@ extern "C"
     extern const double HOST_ONE;
     extern const double HOST_ZERO;
 
+    double monotonic_time_seconds(void);
+
     void *safe_malloc(size_t size);
 
     void *safe_calloc(size_t num, size_t size);

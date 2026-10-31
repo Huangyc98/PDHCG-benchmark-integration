@@ -22,10 +22,35 @@ limitations under the License.
 #include <math.h>
 #include <signal.h>
 #include <string.h>
+#include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #ifndef PDHCG_VERSION
 #define PDHCG_VERSION "unknown"
 #endif
+
+double monotonic_time_seconds(void)
+{
+#ifdef _WIN32
+    LARGE_INTEGER counter, frequency;
+    if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&counter))
+    {
+        fprintf(stderr, "Failed to read the performance counter.\n");
+        exit(EXIT_FAILURE);
+    }
+    return (double)counter.QuadPart / (double)frequency.QuadPart;
+#else
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    {
+        perror("clock_gettime");
+        exit(EXIT_FAILURE);
+    }
+    return (double)now.tv_sec + (double)now.tv_nsec * 1e-9;
+#endif
+}
 
 void *safe_malloc(size_t size)
 {

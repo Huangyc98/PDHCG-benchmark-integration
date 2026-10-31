@@ -25,31 +25,9 @@ limitations under the License.
 #include "qcqp_transform.h"
 #include "solver_state.h"
 #include "utils.h"
-#include <time.h>
-#ifdef _WIN32
-#include <windows.h>
-#endif
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
-
-static double monotonic_time_seconds(void)
-{
-#ifdef _WIN32
-    LARGE_INTEGER counter, frequency;
-    QueryPerformanceFrequency(&frequency);
-    QueryPerformanceCounter(&counter);
-    return (double)counter.QuadPart / (double)frequency.QuadPart;
-#else
-    struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-    {
-        perror("clock_gettime");
-        exit(EXIT_FAILURE);
-    }
-    return (double)now.tv_sec + (double)now.tv_nsec * 1e-9;
-#endif
-}
 
 pdhcg_result_t *optimize(const pdhg_parameters_t *input_params, const qp_problem_t *original_problem)
 {

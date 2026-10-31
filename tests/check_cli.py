@@ -83,12 +83,14 @@ def check_infeasibility_options(binary):
 
 
 def check_quadratic_options(binary):
-    for value in ["-1", "nan", "inf", "oops", "0.5junk"]:
-        log = run(binary, "--k_p", value, "unused.qps", "unused-output", expect_failure=True)
-        assert "k_p must be finite and nonnegative" in log, log
-    for value in ["-1", "2", "true", "oops"]:
-        log = run(binary, "--linearized", value, "unused.qps", "unused-output", expect_failure=True)
-        assert "linearized must be 0 or 1" in log, log
+    problem, output = "unused.qps", "unused-output"
+    for value in ["nan", "inf", "-inf"]:
+        log = run(binary, "--k_p", value, problem, output, expect_failure=True)
+        assert "restart PID coefficients must be finite" in log, log
+    log = run(binary, "--linearized", "0", problem, output, expect_failure=True)
+    assert "unrecognized option" in log and "--linearized" in log, log
+    log = run(binary, "--non_diagonal_quadratic_mode", "unknown", problem, output, expect_failure=True)
+    assert "non_diagonal_quadratic_mode" in log, log
     print("PASS CLI quadratic option validation", flush=True)
 
 
@@ -100,7 +102,10 @@ def main():
         "Built devices: cpu", "Default device: cpu",
     ]
     print("PASS CLI --list-devices", flush=True)
-    assert "--device <name>" in run(binary, "--help")
+    help_text = run(binary, "--help")
+    for option in ["--device <name>", "--k_p", "--non_diagonal_quadratic_mode"]:
+        assert option in help_text, help_text
+    assert "--linearized" not in help_text, help_text
     for device in ["unknown", "cuda"]:
         log = run(binary, "--device", device, "unused.qps", "unused-output", expect_failure=True)
         assert "Error:" in log and "device" in log and device in log, log
@@ -134,16 +139,18 @@ ENDATA
             binary, qp, root / "qp", [1.5, 2.5], -4.5,
             infeasibility_tolerance=1e-12,
         )
-        # Both spellings can be combined; later options take precedence.
+        # The cross term exercises both non-diagonal update paths.
+        off_diagonal = root / "off-diagonal.qps"
+        off_diagonal.write_text(qp.read_text().replace(" X X 2\n", " X X 2\n X Y 1\n"))
         check_solution(
-            binary, qp, root / "linearized", [1.5, 2.5], -4.5,
-            extra_options=("--k_p", "0.5", "--linearized", "0",
+            binary, off_diagonal, root / "linearized", [1.0, 3.0], -1.0,
+            extra_options=("--k_p", "0.5",
                            "--non_diagonal_quadratic_mode", "linearized"),
         )
         check_solution(
-            binary, qp, root / "inner", [1.5, 2.5], -4.5,
-            extra_options=("--k_p", "0", "--non_diagonal_quadratic_mode", "linearized",
-                           "--linearized", "0"),
+            binary, off_diagonal, root / "inner", [1.0, 3.0], -1.0,
+            extra_options=("--k_p", "0",
+                           "--non_diagonal_quadratic_mode", "inner"),
         )
         compressed = root / "tiny.qps.gz"
         with gzip.open(compressed, "wb") as stream:
